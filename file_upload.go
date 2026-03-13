@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"mime"
 	"os"
@@ -24,6 +25,17 @@ func (protonDrive *ProtonDrive) handleRevisionConflict(ctx context.Context, link
 
 		draftRevision, err := protonDrive.GetRevisions(ctx, link, proton.RevisionStateDraft)
 		if err != nil {
+			// If we can't list revisions but the link is already in draft state
+			// (e.g. a broken/incomplete upload from a previous failed attempt)
+			// and the user wants to replace existing drafts, delete the link and
+			// let the caller retry from scratch rather than failing outright.
+			if protonDrive.Config.ReplaceExistingDraft && link.State == proton.LinkStateDraft {
+				err = protonDrive.c.DeleteChildren(ctx, protonDrive.MainShare.ShareID, link.ParentLinkID, linkID)
+				if err != nil {
+					return "", false, err
+				}
+				return "", true, nil
+			}
 			return "", false, err
 		}
 
@@ -250,6 +262,18 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 		return nil, 0, nil, "", ErrMissingInputUploadAndCollectBlockData
 	}
 
+	// Fetch the per-revision verification code required by Proton's storage backend.
+	// Each block's Verifier.Token is produced by XOR-ing this code with the first
+	// bytes of that block's ciphertext (per the Proton Drive JS SDK spec).
+	revVerification, err := protonDrive.c.GetRevisionVerification(ctx, protonDrive.MainShare.VolumeID, linkID, revisionID)
+	if err != nil {
+		return nil, 0, nil, "", fmt.Errorf("uploadAndCollectBlockData: get revision verification: %w", err)
+	}
+	verificationCode, err := base64.StdEncoding.DecodeString(revVerification.VerificationCode)
+	if err != nil {
+		return nil, 0, nil, "", fmt.Errorf("uploadAndCollectBlockData: decode verification code: %w", err)
+	}
+
 	totalFileSize := int64(0)
 
 	pendingUploadBlocks := make([]PendingUploadBlocks, 0)
@@ -309,7 +333,7 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 	blockSizes := make([]int64, 0)
 	for i := 1; shouldContinue; i++ {
 		if (i-1) > 0 && (i-1)%UPLOAD_BATCH_BLOCK_SIZE == 0 {
-			err := uploadPendingBlocks()
+			err = uploadPendingBlocks()
 			if err != nil {
 				return nil, 0, nil, "", err
 			}
@@ -365,17 +389,31 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 		}
 		manifestSignatureData = append(manifestSignatureData, hash...)
 
+		// Compute per-block verifier token: XOR verificationCode with the
+		// leading bytes of the encrypted block (zero-padded if block is shorter).
+		verificationToken := make([]byte, len(verificationCode))
+		for j, v := range verificationCode {
+			var b byte
+			if j < len(encData) {
+				b = encData[j]
+			}
+			verificationToken[j] = v ^ b
+		}
+
 		pendingUploadBlocks = append(pendingUploadBlocks, PendingUploadBlocks{
 			blockUploadInfo: proton.BlockUploadInfo{
 				Index:        i, // iOS drive: BE starts with 1
 				Size:         int64(len(encData)),
 				EncSignature: encSignatureStr,
 				Hash:         base64Hash,
+				Verifier: proton.BlockUploadVerifier{
+					Token: base64.StdEncoding.EncodeToString(verificationToken),
+				},
 			},
 			encData: encData,
 		})
 	}
-	err := uploadPendingBlocks()
+	err = uploadPendingBlocks()
 	if err != nil {
 		return nil, 0, nil, "", err
 	}

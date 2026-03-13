@@ -2,6 +2,7 @@ package proton_api_bridge
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rclone/go-proton-api"
@@ -201,20 +202,27 @@ func (protonDrive *ProtonDrive) MoveFolder(ctx context.Context, srcLink *proton.
 
 func (protonDrive *ProtonDrive) moveLink(ctx context.Context, srcLink *proton.Link, dstParentLink *proton.Link, dstName string) error {
 	// we are moving the srcLink to under dstParentLink, with name dstName
-	req := proton.MoveLinkReq{
-		ParentLinkID:     dstParentLink.LinkID,
-		OriginalHash:     srcLink.Hash,
-		SignatureAddress: protonDrive.signatureAddress,
-	}
 
 	dstParentKR, err := protonDrive.getLinkKR(ctx, dstParentLink)
 	if err != nil {
 		return err
 	}
 
-	err = req.SetName(dstName, protonDrive.DefaultAddrKR, dstParentKR)
+	srcParentKR, err := protonDrive.getLinkKRByID(ctx, srcLink.ParentLinkID)
 	if err != nil {
 		return err
+	}
+
+	// Re-encrypt the node passphrase to new parent keyring (reuse session key)
+	nodePassphrase, err := ReEncryptPassphrase(srcLink.NodePassphrase, srcParentKR, dstParentKR, protonDrive.DefaultAddrKR, protonDrive.userKR)
+	if err != nil {
+		return fmt.Errorf("moveLink: reencrypt passphrase: %w", err)
+	}
+
+	// Re-encrypt the name to new parent keyring
+	encNewName, err := ReEncryptName(srcLink.Name, dstName, srcParentKR, dstParentKR, protonDrive.DefaultAddrKR, protonDrive.userKR)
+	if err != nil {
+		return fmt.Errorf("moveLink: reencrypt name: %w", err)
 	}
 
 	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{dstParentLink.SignatureEmail}, dstParentKR)
@@ -225,21 +233,25 @@ func (protonDrive *ProtonDrive) moveLink(ctx context.Context, srcLink *proton.Li
 	if err != nil {
 		return err
 	}
-	err = req.SetHash(dstName, dstParentHashKey)
+	newNameHash, err := proton.GetNameHash(dstName, dstParentHashKey)
 	if err != nil {
 		return err
 	}
 
-	srcParentKR, err := protonDrive.getLinkKRByID(ctx, srcLink.ParentLinkID)
-	if err != nil {
-		return err
+	req := proton.MoveLinkReq{
+		ParentLinkID:     dstParentLink.LinkID,
+		Name:             encNewName,
+		Hash:             newNameHash,
+		OriginalHash:     srcLink.Hash,
+		NodePassphrase:   nodePassphrase,
+		SignatureAddress: protonDrive.signatureAddress,
+		ContentHash:      nil, // Explicit null for file moves
 	}
-	nodePassphrase, err := reencryptKeyPacket(srcParentKR, dstParentKR, protonDrive.DefaultAddrKR, srcLink.NodePassphrase)
-	if err != nil {
-		return err
+
+	// Only include signatures for anonymous nodes (KeyAuthor == nil)
+	if srcLink.KeyAuthor == nil || *srcLink.KeyAuthor == "" {
+		req.NodePassphraseSignature = srcLink.NodePassphraseSignature
 	}
-	req.NodePassphrase = nodePassphrase
-	req.NodePassphraseSignature = srcLink.NodePassphraseSignature
 
 	protonDrive.removeLinkIDFromCache(srcLink.LinkID, false)
 

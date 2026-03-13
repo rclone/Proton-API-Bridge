@@ -77,6 +77,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rclone/go-proton-api v1.0.1-0.20260127173028-eb465cac3b18 h1:Lc+d3ISfQaMJKWZOE7z4ZSY4RVmdzbn1B0IM8xN18qM=
 github.com/rclone/go-proton-api v1.0.1-0.20260127173028-eb465cac3b18/go.mod h1:LB2kCEaZMzNn3ocdz+qYfxXmuLxxN0ka62KJd2x53Bc=
+github.com/rclone/go-proton-api v1.0.1-0.20260218123427-1a63a293e3a2 h1:QR87vlRq+z0JwJsUteEhsXcSrXGJ2yte5MocMSfajM4=
+github.com/rclone/go-proton-api v1.0.1-0.20260218123427-1a63a293e3a2/go.mod h1:LB2kCEaZMzNn3ocdz+qYfxXmuLxxN0ka62KJd2x53Bc=
 github.com/relvacode/iso8601 v1.6.0 h1:eFXUhMJN3Gz8Rcq82f9DTMW0svjtAVuIEULglM7QHTU=
 github.com/relvacode/iso8601 v1.6.0/go.mod h1:FlNp+jz+TXpyRqgmM7tnzHHzBnz776kmAH2h3sZCn0I=
 github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=

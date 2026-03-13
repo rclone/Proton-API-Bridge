@@ -7,7 +7,7 @@ toolchain go1.23.5
 require (
 	github.com/ProtonMail/gluon v0.17.1-0.20230724134000-308be39be96e
 	github.com/ProtonMail/gopenpgp/v2 v2.8.2
-	github.com/rclone/go-proton-api v1.0.1-0.20260127173028-eb465cac3b18
+	github.com/rclone/go-proton-api v1.0.1-0.20260218123427-1a63a293e3a2
 	github.com/relvacode/iso8601 v1.6.0
 	golang.org/x/sync v0.10.0
 )
