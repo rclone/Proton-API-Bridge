@@ -3,6 +3,7 @@ package proton_api_bridge
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"io"
 
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
@@ -165,4 +166,77 @@ func decryptBlockIntoBuffer(sessionKey *crypto.SessionKey, addrKR, nodeKR *crypt
 	}
 
 	return nil
+}
+
+// decryptSessionKey tries multiple keyrings to decrypt a session key.
+// Fallback chain: srcParentKR -> addrKR -> userKR
+func decryptSessionKey(keyPacket []byte, candidates ...*crypto.KeyRing) (*crypto.SessionKey, error) {
+	var err error
+	tried := false
+	for _, kr := range candidates {
+		if kr == nil {
+			continue
+		}
+		tried = true
+		var sk *crypto.SessionKey
+		sk, err = kr.DecryptSessionKey(keyPacket)
+		if err == nil {
+			return sk, nil
+		}
+	}
+	if !tried {
+		return nil, fmt.Errorf("decryptSessionKey: no non-nil keyrings provided")
+	}
+	return nil, err
+}
+
+// ReEncryptPassphrase re-encrypts a node passphrase to a new parent
+// keyring while reusing the original symmetric session key.
+func ReEncryptPassphrase(armoredPassphrase string, srcParentKR, dstParentKR, addrKR, userKR *crypto.KeyRing) (string, error) {
+	split, err := crypto.NewPGPSplitMessageFromArmored(armoredPassphrase)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptPassphrase: split: %w", err)
+	}
+
+	sk, err := decryptSessionKey(split.GetBinaryKeyPacket(), srcParentKR, addrKR, userKR)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptPassphrase: decrypt session key: %w", err)
+	}
+
+	newKeyPacket, err := dstParentKR.EncryptSessionKey(sk)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptPassphrase: encrypt session key: %w", err)
+	}
+
+	armored, err := crypto.NewPGPSplitMessage(newKeyPacket, split.GetBinaryDataPacket()).GetArmored()
+	if err != nil {
+		return "", fmt.Errorf("reEncryptPassphrase: armor: %w", err)
+	}
+	return armored, nil
+}
+
+// ReEncryptName re-encrypts a node name for a new parent keyring while
+// reusing the original name session key and optionally changing the plaintext.
+func ReEncryptName(armoredName, newName string, srcParentKR, dstParentKR, addrKR, userKR *crypto.KeyRing) (string, error) {
+	split, err := crypto.NewPGPSplitMessageFromArmored(armoredName)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptName: split: %w", err)
+	}
+
+	sk, err := decryptSessionKey(split.GetBinaryKeyPacket(), srcParentKR, addrKR, userKR)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptName: decrypt session key: %w", err)
+	}
+
+	dataPacket, err := sk.EncryptAndSign(crypto.NewPlainMessageFromString(newName), addrKR)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptName: encrypt: %w", err)
+	}
+
+	newKeyPacket, err := dstParentKR.EncryptSessionKey(sk)
+	if err != nil {
+		return "", fmt.Errorf("reEncryptName: encrypt session key: %w", err)
+	}
+
+	return crypto.NewPGPSplitMessage(newKeyPacket, dataPacket).GetArmored()
 }
