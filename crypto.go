@@ -73,25 +73,43 @@ func generateNodeKeys(kr, addrKR *crypto.KeyRing) (string, string, string, error
 	return nodeKey, nodePassphraseEnc, nodePassphraseSignature, nil
 }
 
-func reencryptKeyPacket(srcKR, dstKR, addrKR *crypto.KeyRing, passphrase string) (string, error) {
-	oldSplitMessage, err := crypto.NewPGPSplitMessageFromArmored(passphrase)
+func reencryptKeyPacket(srcKR, dstKR, addrKR *crypto.KeyRing, passphrase string) (string, string, error) {
+	split, err := crypto.NewPGPSplitMessageFromArmored(passphrase)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	sessionKey, err := srcKR.DecryptSessionKey(split.GetBinaryKeyPacket())
+	if err != nil {
+		return "", "", err
 	}
 
-	sessionKey, err := srcKR.DecryptSessionKey(oldSplitMessage.KeyPacket)
+	dec, err := sessionKey.Decrypt(split.GetBinaryDataPacket())
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
+	newDataPacket, err := sessionKey.Encrypt(crypto.NewPlainMessage(dec.GetBinary()))
+	if err != nil {
+		return "", "", err
+	}
 	newKeyPacket, err := dstKR.EncryptSessionKey(sessionKey)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	newPassphrase, err := crypto.NewPGPSplitMessage(newKeyPacket, newDataPacket).GetArmored()
+	if err != nil {
+		return "", "", err
+	}
+	sig, err := addrKR.SignDetached(dec)
+	if err != nil {
+		return "", "", err
+	}
+	newSignature, err := sig.GetArmored()
+	if err != nil {
+		return "", "", err
 	}
 
-	newSplitMessage := crypto.NewPGPSplitMessage(newKeyPacket, oldSplitMessage.DataPacket)
-
-	return newSplitMessage.GetArmored()
+	return newPassphrase, newSignature, nil
 }
 
 func getKeyRing(kr, addrKR *crypto.KeyRing, key, passphrase, passphraseSignature string) (*crypto.KeyRing, error) {

@@ -71,6 +71,7 @@ func NewProtonDrive(ctx context.Context, config *common.Config, authHandler prot
 		// iOS drive: first active volume
 		if volumes[i].State == proton.VolumeStateActive {
 			mainShareID = volumes[i].Share.ShareID
+			break
 		}
 	}
 	// log.Println("total volumes", len(volumes), "mainShareID", mainShareID)

@@ -59,6 +59,7 @@ func Login(ctx context.Context, config *Config, authHandler proton.AuthHandler, 
 
 	if config.UseReusableLogin {
 		c = m.NewClient(config.ReusableCredential.UID, config.ReusableCredential.AccessToken, config.ReusableCredential.RefreshToken)
+		attachDriveSDKHeaderHook(c, config.DriveSDKVersion)
 		c.AddAuthHandler(authHandler)
 		c.AddDeauthHandler(deAuthHandler)
 
@@ -90,6 +91,7 @@ func Login(ctx context.Context, config *Config, authHandler proton.AuthHandler, 
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, err
 		}
+		attachDriveSDKHeaderHook(c, config.DriveSDKVersion)
 		c.AddAuthHandler(authHandler)
 		c.AddDeauthHandler(deAuthHandler)
 

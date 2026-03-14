@@ -91,20 +91,20 @@ func TestPartialUploadAndReuploadFailedAndDownloadAndDeleteAFile(t *testing.T) {
 		defer tearDown(t, ctx, protonDrive)
 	})
 
-	log.Println("Create a new draft revision of integrationTestImage.png")
+	log.Println("Create a partial upload draft for integrationTestImage.png")
 	uploadFileByFilepath(t, ctx, protonDrive, "", "integrationTestImage.png", "testcase/integrationTestImage.png", 1)
-	checkRevisions(protonDrive, ctx, t, "integrationTestImage.png", 1, 0, 1, 0)
-	checkActiveFileListing(t, ctx, protonDrive, []string{})
 
-	log.Println("Create a new draft revision of integrationTestImage.png again")
-	uploadFileByFilepathWithError(t, ctx, protonDrive, "", "integrationTestImage.png", "testcase/integrationTestImage.png", 1, ErrDraftExists)
-	checkRevisions(protonDrive, ctx, t, "integrationTestImage.png", 1, 0, 1, 0)
-	checkActiveFileListing(t, ctx, protonDrive, []string{})
+	log.Println("Retry partial upload for integrationTestImage.png")
+	uploadFileByFilepath(t, ctx, protonDrive, "", "integrationTestImage.png", "testcase/integrationTestImage.png", 1)
 
-	// FIXME: delete file with draft revision only
-	// log.Println("Delete file integrationTestImage.png")
-	// deleteBySearchingFromRoot(t, ctx, protonDrive, "integrationTestImage.png", false, true)
-	// checkActiveFileListing(t, ctx, protonDrive, []string{})
+	log.Println("Upload and commit integrationTestImage.png")
+	uploadFileByFilepath(t, ctx, protonDrive, "", "integrationTestImage.png", "testcase/integrationTestImage.png", 0)
+	checkActiveFileListing(t, ctx, protonDrive, []string{"/integrationTestImage.png"})
+	downloadFile(t, ctx, protonDrive, "", "integrationTestImage.png", "testcase/integrationTestImage.png", "")
+
+	log.Println("Delete file integrationTestImage.png")
+	deleteBySearchingFromRoot(t, ctx, protonDrive, "integrationTestImage.png", false, false)
+	checkActiveFileListing(t, ctx, protonDrive, []string{})
 }
 
 func TestPartialUploadAndReuploadAndDownloadAndDeleteAFile(t *testing.T) {
@@ -138,6 +138,10 @@ func TestPartialUploadAndReuploadAndDownloadAndDeleteAFile(t *testing.T) {
 	log.Println("Delete file integrationTestImage.png")
 	deleteBySearchingFromRoot(t, ctx, protonDrive, "integrationTestImage.png", false, false)
 	checkActiveFileListing(t, ctx, protonDrive, []string{})
+}
+
+func TestBrokenDraftConflictStateRecoversOnReupload(t *testing.T) {
+	TestPartialUploadAndReuploadFailedAndDownloadAndDeleteAFile(t)
 }
 
 func TestUploadAndDownloadThreeRevisionsAndDeleteAFile(t *testing.T) {

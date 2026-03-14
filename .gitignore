@@ -1,5 +1,6 @@
 .DS_Store
 .credential
 .*.credential
+.env
 data
 config.toml

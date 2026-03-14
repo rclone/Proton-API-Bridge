@@ -7,8 +7,9 @@ import (
 
 type Config struct {
 	/* Constants */
-	AppVersion string
-	UserAgent  string
+	AppVersion      string
+	DriveSDKVersion string
+	UserAgent       string
 
 	/* Login */
 	FirstLoginCredential *FirstLoginCredentialData
@@ -44,8 +45,9 @@ type ReusableCredentialData struct {
 
 func NewConfigWithDefaultValues() *Config {
 	return &Config{
-		AppVersion: "",
-		UserAgent:  "",
+		AppVersion:      "",
+		DriveSDKVersion: "",
+		UserAgent:       "",
 
 		FirstLoginCredential: &FirstLoginCredentialData{
 			Username:        "",
@@ -75,6 +77,7 @@ func NewConfigWithDefaultValues() *Config {
 
 func NewConfigForIntegrationTests() *Config {
 	appVersion := os.Getenv("PROTON_API_BRIDGE_APP_VERSION")
+	driveSDKVersion := os.Getenv("PROTON_API_BRIDGE_DRIVE_SDK_VERSION")
 	userAgent := os.Getenv("PROTON_API_BRIDGE_USER_AGENT")
 
 	username := os.Getenv("PROTON_API_BRIDGE_TEST_USERNAME")
@@ -93,8 +96,9 @@ func NewConfigForIntegrationTests() *Config {
 	saltedKeyPass := os.Getenv("PROTON_API_BRIDGE_TEST_SALTEDKEYPASS")
 
 	return &Config{
-		AppVersion: appVersion,
-		UserAgent:  userAgent,
+		AppVersion:      appVersion,
+		DriveSDKVersion: driveSDKVersion,
+		UserAgent:       userAgent,
 
 		FirstLoginCredential: &FirstLoginCredentialData{
 			Username:        username,
