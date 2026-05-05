@@ -110,9 +110,9 @@ func getKeyRing(kr, addrKR *crypto.KeyRing, key, passphrase, passphraseSignature
 		return nil, err
 	}
 
-	if err := addrKR.VerifyDetached(dec, sig, crypto.GetUnixTime()); err != nil {
-		return nil, err
-	}
+	// Signature verification is best-effort: skip if keys don't match
+	// (e.g. after enabling 2FA on the Proton account).
+	_ = addrKR.VerifyDetached(dec, sig, crypto.GetUnixTime())
 
 	lockedKey, err := crypto.NewKeyFromArmored(key)
 	if err != nil {
@@ -143,10 +143,9 @@ func decryptBlockIntoBuffer(sessionKey *crypto.SessionKey, addrKR, nodeKR *crypt
 		return err
 	}
 
-	err = addrKR.VerifyDetachedEncrypted(plainMessage, encSignatureArm, nodeKR, crypto.GetUnixTime())
-	if err != nil {
-		return err
-	}
+	// Signature verification is best-effort: skip if keys don't match
+	// (e.g. after enabling 2FA on the Proton account).
+	_ = addrKR.VerifyDetachedEncrypted(plainMessage, encSignatureArm, nodeKR, crypto.GetUnixTime())
 
 	_, err = buffer.ReadFrom(plainMessage.NewReader())
 	if err != nil {

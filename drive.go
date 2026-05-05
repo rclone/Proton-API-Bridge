@@ -200,6 +200,20 @@ func (protonDrive *ProtonDrive) getSignatureVerificationKeyring(emailAddresses [
 		return nil, err
 	}
 
+	// Fallback: if no keys matched the specific email addresses, include
+	// all available address keyrings. This handles cases where the link's
+	// SignatureEmail no longer matches the current account addresses —
+	// for example after enabling 2FA triggers an address key rotation,
+	// or when Proton assigns a different alias (@proton.me vs
+	// @protonmail.com) than the one used to sign the data.
+	if ret.CountEntities() == 0 {
+		for _, addrKR := range protonDrive.addrKRs {
+			if err := addKeysFromKR(ret, addrKR); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if ret.CountEntities() == 0 {
 		return nil, ErrNoKeyringForSignatureVerification
 	}
