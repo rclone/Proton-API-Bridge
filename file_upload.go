@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ProtonMail/gopenpgp/v2/crypto"
+	"github.com/ProtonMail/gopenpgp/v3/crypto"
 	"github.com/rclone/Proton-API-Bridge/utility"
 	"github.com/rclone/go-proton-api"
 )
@@ -342,17 +342,38 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 			Encryption: current link's session key
 			Signature: share's signature address keys
 		*/
-		dataPlainMessage := crypto.NewPlainMessage(data)
-		encData, err := newSessionKey.Encrypt(dataPlainMessage)
-		if err != nil {
-			return nil, 0, nil, "", err
-		}
+		pgp := crypto.PGP()
 
-		encSignature, err := protonDrive.DefaultAddrKR.SignDetachedEncrypted(dataPlainMessage, newNodeKR)
+		sessionEnc, err := pgp.Encryption().SessionKey(newSessionKey).New()
 		if err != nil {
 			return nil, 0, nil, "", err
 		}
-		encSignatureStr, err := encSignature.GetArmored()
+		encMsg, err := sessionEnc.Encrypt(data)
+		if err != nil {
+			return nil, 0, nil, "", err
+		}
+		encData := encMsg.Bytes()
+
+		// v2's SignDetachedEncrypted: sign the data with addrKR, then encrypt
+		// the signature to newNodeKR. v3 does not expose a one-shot helper, so
+		// we sign first and encrypt the signature bytes separately.
+		signHandle, err := pgp.Sign().SigningKeys(protonDrive.DefaultAddrKR).Detached().New()
+		if err != nil {
+			return nil, 0, nil, "", err
+		}
+		rawSig, err := signHandle.Sign(data, crypto.Bytes)
+		if err != nil {
+			return nil, 0, nil, "", err
+		}
+		sigEncHandle, err := pgp.Encryption().Recipients(newNodeKR).New()
+		if err != nil {
+			return nil, 0, nil, "", err
+		}
+		encSignature, err := sigEncHandle.Encrypt(rawSig)
+		if err != nil {
+			return nil, 0, nil, "", err
+		}
+		encSignatureStr, err := encSignature.Armor()
 		if err != nil {
 			return nil, 0, nil, "", err
 		}
@@ -387,14 +408,15 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 }
 
 func (protonDrive *ProtonDrive) commitNewRevision(ctx context.Context, nodeKR *crypto.KeyRing, xAttrCommon *proton.RevisionXAttrCommon, manifestSignatureData []byte, linkID, revisionID string) error {
-	manifestSignature, err := protonDrive.DefaultAddrKR.SignDetached(crypto.NewPlainMessage(manifestSignatureData))
+	signHandle, err := crypto.PGP().Sign().SigningKeys(protonDrive.DefaultAddrKR).Detached().New()
 	if err != nil {
 		return err
 	}
-	manifestSignatureString, err := manifestSignature.GetArmored()
+	manifestSig, err := signHandle.Sign(manifestSignatureData, crypto.Armor)
 	if err != nil {
 		return err
 	}
+	manifestSignatureString := string(manifestSig)
 
 	commitRevisionReq := proton.CommitRevisionReq{
 		ManifestSignature: manifestSignatureString,

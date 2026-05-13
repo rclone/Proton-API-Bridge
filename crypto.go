@@ -1,12 +1,13 @@
 package proton_api_bridge
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"io"
 
-	"github.com/ProtonMail/gopenpgp/v2/crypto"
-	"github.com/ProtonMail/gopenpgp/v2/helper"
+	"github.com/ProtonMail/gopenpgp/v3/armor"
+	"github.com/ProtonMail/gopenpgp/v3/crypto"
 )
 
 func generatePassphrase() (string, error) {
@@ -19,14 +20,34 @@ func generatePassphrase() (string, error) {
 	return tokenBase64, nil
 }
 
+// generateLockedKey is the v3-equivalent of v2 helper.GenerateKey: it generates
+// a new curve25519 key with the given identity, locks it with the passphrase,
+// and returns the armored locked key.
+func generateLockedKey(name, email string, passphrase []byte) (string, error) {
+	pgp := crypto.PGP()
+	key, err := pgp.KeyGeneration().AddUserId(name, email).New().GenerateKey()
+	if err != nil {
+		return "", err
+	}
+	defer key.ClearPrivateParams()
+
+	locked, err := pgp.LockKey(key, passphrase)
+	if err != nil {
+		return "", err
+	}
+	return locked.Armor()
+}
+
 func generateCryptoKey() (string, string, error) {
 	passphrase, err := generatePassphrase()
 	if err != nil {
 		return "", "", err
 	}
 
-	// all hardcoded values from iOS drive
-	key, err := helper.GenerateKey("Drive key", "noreply@protonmail.com", []byte(passphrase), "x25519", 0)
+	// "Drive key" / "noreply@protonmail.com" are the hardcoded identity used by
+	// the iOS Drive client; v3's default profile produces a curve25519 key,
+	// which is what the v2 helper produced for keyType "x25519".
+	key, err := generateLockedKey("Drive key", "noreply@protonmail.com", []byte(passphrase))
 	if err != nil {
 		return "", "", err
 	}
@@ -34,29 +55,37 @@ func generateCryptoKey() (string, string, error) {
 	return passphrase, key, nil
 }
 
-// taken from Proton Go API Backend
+// encryptWithSignature encrypts b to kr and signs it with addrKR, returning the
+// armored ciphertext and armored detached signature.
 func encryptWithSignature(kr, addrKR *crypto.KeyRing, b []byte) (string, string, error) {
-	enc, err := kr.Encrypt(crypto.NewPlainMessage(b), nil)
+	pgp := crypto.PGP()
+
+	encHandle, err := pgp.Encryption().Recipients(kr).New()
 	if err != nil {
 		return "", "", err
 	}
 
-	encArm, err := enc.GetArmored()
+	enc, err := encHandle.Encrypt(b)
 	if err != nil {
 		return "", "", err
 	}
 
-	sig, err := addrKR.SignDetached(crypto.NewPlainMessage(b))
+	encArm, err := enc.Armor()
 	if err != nil {
 		return "", "", err
 	}
 
-	sigArm, err := sig.GetArmored()
+	signHandle, err := pgp.Sign().SigningKeys(addrKR).Detached().New()
 	if err != nil {
 		return "", "", err
 	}
 
-	return encArm, sigArm, nil
+	sigArm, err := signHandle.Sign(b, crypto.Armor)
+	if err != nil {
+		return "", "", err
+	}
+
+	return encArm, string(sigArm), nil
 }
 
 func generateNodeKeys(kr, addrKR *crypto.KeyRing) (string, string, string, error) {
@@ -74,44 +103,71 @@ func generateNodeKeys(kr, addrKR *crypto.KeyRing) (string, string, string, error
 }
 
 func reencryptKeyPacket(srcKR, dstKR, addrKR *crypto.KeyRing, passphrase string) (string, error) {
-	oldSplitMessage, err := crypto.NewPGPSplitMessageFromArmored(passphrase)
+	pgp := crypto.PGP()
+
+	oldMessage, err := crypto.NewPGPMessageFromArmored(passphrase)
 	if err != nil {
 		return "", err
 	}
 
-	sessionKey, err := srcKR.DecryptSessionKey(oldSplitMessage.KeyPacket)
+	srcDec, err := pgp.Decryption().DecryptionKeys(srcKR).New()
 	if err != nil {
 		return "", err
 	}
 
-	newKeyPacket, err := dstKR.EncryptSessionKey(sessionKey)
+	sessionKey, err := srcDec.DecryptSessionKey(oldMessage.BinaryKeyPacket())
 	if err != nil {
 		return "", err
 	}
 
-	newSplitMessage := crypto.NewPGPSplitMessage(newKeyPacket, oldSplitMessage.DataPacket)
+	dstEnc, err := pgp.Encryption().Recipients(dstKR).New()
+	if err != nil {
+		return "", err
+	}
 
-	return newSplitMessage.GetArmored()
+	newKeyPacket, err := dstEnc.EncryptSessionKey(sessionKey)
+	if err != nil {
+		return "", err
+	}
+
+	newSplitMessage := crypto.NewPGPSplitMessage(newKeyPacket, oldMessage.BinaryDataPacket())
+	return newSplitMessage.Armor()
 }
 
 func getKeyRing(kr, addrKR *crypto.KeyRing, key, passphrase, passphraseSignature string) (*crypto.KeyRing, error) {
+	pgp := crypto.PGP()
+
 	enc, err := crypto.NewPGPMessageFromArmored(passphrase)
 	if err != nil {
 		return nil, err
 	}
 
-	dec, err := kr.Decrypt(enc, nil, crypto.GetUnixTime())
+	decHandle, err := pgp.Decryption().DecryptionKeys(kr).New()
 	if err != nil {
 		return nil, err
 	}
 
-	sig, err := crypto.NewPGPSignatureFromArmored(passphraseSignature)
+	decResult, err := decHandle.Decrypt(enc.Bytes(), crypto.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	dec := decResult.Bytes()
+
+	sig, err := armor.Unarmor(passphraseSignature)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := addrKR.VerifyDetached(dec, sig, crypto.GetUnixTime()); err != nil {
+	verifyHandle, err := pgp.Verify().VerificationKeys(addrKR).New()
+	if err != nil {
 		return nil, err
+	}
+	verifyResult, err := verifyHandle.VerifyDetached(dec, sig, crypto.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	if sigErr := verifyResult.SignatureError(); sigErr != nil {
+		return nil, sigErr
 	}
 
 	lockedKey, err := crypto.NewKeyFromArmored(key)
@@ -119,7 +175,7 @@ func getKeyRing(kr, addrKR *crypto.KeyRing, key, passphrase, passphraseSignature
 		return nil, err
 	}
 
-	unlockedKey, err := lockedKey.Unlock(dec.GetBinary())
+	unlockedKey, err := lockedKey.Unlock(dec)
 	if err != nil {
 		return nil, err
 	}
@@ -133,23 +189,41 @@ func decryptBlockIntoBuffer(sessionKey *crypto.SessionKey, addrKR, nodeKR *crypt
 		return err
 	}
 
-	plainMessage, err := sessionKey.Decrypt(data)
+	skDec, err := crypto.PGP().Decryption().SessionKey(sessionKey).New()
+	if err != nil {
+		return err
+	}
+	skResult, err := skDec.Decrypt(data, crypto.Bytes)
+	if err != nil {
+		return err
+	}
+	plain := skResult.Bytes()
+
+	encSignatureMsg, err := crypto.NewPGPMessageFromArmored(encSignature)
 	if err != nil {
 		return err
 	}
 
-	encSignatureArm, err := crypto.NewPGPMessageFromArmored(encSignature)
+	// v2 used addrKR.VerifyDetachedEncrypted, where the signature itself is
+	// encrypted to nodeKR. v3 expresses this through a Decryption handle with
+	// PlainDetachedSignature() + DecryptDetached().
+	decHandle, err := crypto.PGP().Decryption().
+		DecryptionKeys(nodeKR).
+		VerificationKeys(addrKR).
+		PlainDetachedSignature().
+		New()
 	if err != nil {
 		return err
 	}
-
-	err = addrKR.VerifyDetachedEncrypted(plainMessage, encSignatureArm, nodeKR, crypto.GetUnixTime())
+	verifyResult, err := decHandle.DecryptDetached(plain, encSignatureMsg.Bytes(), crypto.Bytes)
 	if err != nil {
 		return err
 	}
+	if sigErr := verifyResult.SignatureError(); sigErr != nil {
+		return sigErr
+	}
 
-	_, err = buffer.ReadFrom(plainMessage.NewReader())
-	if err != nil {
+	if _, err := buffer.ReadFrom(bytes.NewReader(plain)); err != nil {
 		return err
 	}
 
@@ -157,9 +231,6 @@ func decryptBlockIntoBuffer(sessionKey *crypto.SessionKey, addrKR, nodeKR *crypt
 	h.Write(data)
 	hash := h.Sum(nil)
 	base64Hash := base64.StdEncoding.EncodeToString(hash)
-	if err != nil {
-		return err
-	}
 	if base64Hash != originalHash {
 		return ErrDownloadedBlockHashVerificationFailed
 	}
