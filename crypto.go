@@ -204,18 +204,27 @@ func decryptBlockIntoBuffer(sessionKey *crypto.SessionKey, addrKR, nodeKR *crypt
 		return err
 	}
 
-	// v2 used addrKR.VerifyDetachedEncrypted, where the signature itself is
-	// encrypted to nodeKR. v3 expresses this through a Decryption handle with
-	// PlainDetachedSignature() + DecryptDetached().
-	decHandle, err := crypto.PGP().Decryption().
-		DecryptionKeys(nodeKR).
-		VerificationKeys(addrKR).
-		PlainDetachedSignature().
-		New()
+	// v2 used addrKR.VerifyDetachedEncrypted(plainMessage, encSignature, nodeKR, time),
+	// which decrypts the encrypted detached signature with nodeKR and then verifies it
+	// against the already-decrypted plain data using addrKR. v3 has no single-call
+	// equivalent: DecryptDetached treats its first argument as encrypted PGP data and
+	// would feed our plaintext into openpgp.ReadMessage. So we do it in two steps:
+	// decrypt the signature with nodeKR, then verify it against the plain data with addrKR.
+	sigDecHandle, err := crypto.PGP().Decryption().DecryptionKeys(nodeKR).New()
 	if err != nil {
 		return err
 	}
-	verifyResult, err := decHandle.DecryptDetached(plain, encSignatureMsg.Bytes(), crypto.Bytes)
+	sigDecResult, err := sigDecHandle.Decrypt(encSignatureMsg.Bytes(), crypto.Bytes)
+	if err != nil {
+		return err
+	}
+	sigBytes := sigDecResult.Bytes()
+
+	verifyHandle, err := crypto.PGP().Verify().VerificationKeys(addrKR).New()
+	if err != nil {
+		return err
+	}
+	verifyResult, err := verifyHandle.VerifyDetached(plain, sigBytes, crypto.Bytes)
 	if err != nil {
 		return err
 	}
