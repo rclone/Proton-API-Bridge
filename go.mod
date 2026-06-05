@@ -6,15 +6,15 @@ toolchain go1.23.5
 
 require (
 	github.com/ProtonMail/gluon v0.17.1-0.20230724134000-308be39be96e
+	github.com/ProtonMail/go-crypto v1.4.1
 	github.com/ProtonMail/gopenpgp/v3 v3.4.1
-	github.com/rclone/go-proton-api v1.0.3-0.20260513211403-b4908c1522fc
+	github.com/rclone/go-proton-api v1.0.3
 	github.com/relvacode/iso8601 v1.6.0
 	golang.org/x/sync v0.16.0
 )
 
 require (
 	github.com/ProtonMail/bcrypt v0.0.0-20211005172633-e235017c1baf // indirect
-	github.com/ProtonMail/go-crypto v1.4.1 // indirect
 	github.com/ProtonMail/go-srp v0.0.7 // indirect
 	github.com/PuerkitoBio/goquery v1.8.1 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect

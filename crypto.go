@@ -6,9 +6,28 @@ import (
 	"encoding/base64"
 	"io"
 
+	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"github.com/ProtonMail/gopenpgp/v3/armor"
 	"github.com/ProtonMail/gopenpgp/v3/crypto"
+	"github.com/ProtonMail/gopenpgp/v3/profile"
 )
+
+// protonDrivePGP returns a gopenpgp handle configured for Proton Drive's
+// crypto-refresh (RFC 9580) file-content format: v6 keys/key packets (PKESK)
+// and a v2 SEIPD data packet using AES-256-GCM. The RFC9580 profile defaults
+// the AEAD mode to OCB, so we override it to GCM (the mode Proton Drive
+// requires).
+//
+// It is used to generate v6 file node keys (see generateLockedKey) and to
+// encrypt file blocks. When encrypting blocks, the content session key's v6
+// flag selects the v2 SEIPD packet and this handle's AEAD config selects the
+// GCM mode; a non-v6 session key (an older file's existing content key) yields
+// a v1 SEIPD instead, keeping revisions consistent with the original format.
+func protonDrivePGP() *crypto.PGPHandle {
+	p := profile.RFC9580()
+	p.AeadEncryption = &packet.AEADConfig{DefaultMode: packet.AEADModeGCM}
+	return crypto.PGPWithProfile(p)
+}
 
 func generatePassphrase() (string, error) {
 	token, err := crypto.RandomToken(32)
@@ -21,10 +40,19 @@ func generatePassphrase() (string, error) {
 }
 
 // generateLockedKey is the v3-equivalent of v2 helper.GenerateKey: it generates
-// a new curve25519 key with the given identity, locks it with the passphrase,
-// and returns the armored locked key.
-func generateLockedKey(name, email string, passphrase []byte) (string, error) {
+// a new key with the given identity, locks it with the passphrase, and returns
+// the armored locked key.
+//
+// When aead is true the key is generated with the crypto-refresh handle so it
+// is a v6 key. This is required for FILE node keys only: Proton's server
+// rejects a v6 content key packet (PKESK) encrypted to a v4 node key ("could
+// not verify the nodeKey was used for encrypting contentKeyPacket"), so the
+// file node key must itself be v6. Folder node keys stay v4 (aead false).
+func generateLockedKey(name, email string, passphrase []byte, aead bool) (string, error) {
 	pgp := crypto.PGP()
+	if aead {
+		pgp = protonDrivePGP()
+	}
 	key, err := pgp.KeyGeneration().AddUserId(name, email).New().GenerateKey()
 	if err != nil {
 		return "", err
@@ -38,7 +66,7 @@ func generateLockedKey(name, email string, passphrase []byte) (string, error) {
 	return locked.Armor()
 }
 
-func generateCryptoKey() (string, string, error) {
+func generateCryptoKey(aead bool) (string, string, error) {
 	passphrase, err := generatePassphrase()
 	if err != nil {
 		return "", "", err
@@ -47,7 +75,7 @@ func generateCryptoKey() (string, string, error) {
 	// "Drive key" / "noreply@protonmail.com" are the hardcoded identity used by
 	// the iOS Drive client; v3's default profile produces a curve25519 key,
 	// which is what the v2 helper produced for keyType "x25519".
-	key, err := generateLockedKey("Drive key", "noreply@protonmail.com", []byte(passphrase))
+	key, err := generateLockedKey("Drive key", "noreply@protonmail.com", []byte(passphrase), aead)
 	if err != nil {
 		return "", "", err
 	}
@@ -88,8 +116,12 @@ func encryptWithSignature(kr, addrKR *crypto.KeyRing, b []byte) (string, string,
 	return encArm, string(sigArm), nil
 }
 
-func generateNodeKeys(kr, addrKR *crypto.KeyRing) (string, string, string, error) {
-	nodePassphrase, nodeKey, err := generateCryptoKey()
+// generateNodeKeys generates a node key, its passphrase, and the passphrase
+// signature. aead selects a v6 (crypto-refresh) node key, which is used for
+// FILE nodes only — folder nodes pass aead=false. The passphrase is always
+// encrypted to the parent keyring with the default (non-AEAD) handle.
+func generateNodeKeys(kr, addrKR *crypto.KeyRing, aead bool) (string, string, string, error) {
+	nodePassphrase, nodeKey, err := generateCryptoKey(aead)
 	if err != nil {
 		return "", "", "", err
 	}

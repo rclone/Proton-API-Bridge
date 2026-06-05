@@ -85,7 +85,9 @@ func (protonDrive *ProtonDrive) createFileUploadDraft(ctx context.Context, paren
 		Encryption: parent link's node key
 		Signature: share's signature address keys
 	*/
-	newNodeKey, newNodePassphraseEnc, newNodePassphraseSignature, err := generateNodeKeys(parentNodeKR, protonDrive.DefaultAddrKR)
+	// File node keys are v6 (crypto-refresh) so the v6 content key packet can be
+	// verified against them by the server.
+	newNodeKey, newNodePassphraseEnc, newNodePassphraseSignature, err := generateNodeKeys(parentNodeKR, protonDrive.DefaultAddrKR, true)
 	if err != nil {
 		return "", "", nil, nil, err
 	}
@@ -344,7 +346,12 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 		*/
 		pgp := crypto.PGP()
 
-		sessionEnc, err := pgp.Encryption().SessionKey(newSessionKey).New()
+		// Block data is encrypted with the crypto-refresh handle. When
+		// newSessionKey carries the v6 flag (new files, and revisions of
+		// crypto-refresh files) this produces a v2 SEIPD packet using
+		// AES-256-GCM; for an older file's v4 content key it produces a v1
+		// SEIPD, keeping the revision consistent with the original format.
+		sessionEnc, err := protonDrivePGP().Encryption().SessionKey(newSessionKey).New()
 		if err != nil {
 			return nil, 0, nil, "", err
 		}
