@@ -23,40 +23,49 @@ func (protonDrive *ProtonDrive) handleRevisionConflict(ctx context.Context, link
 	if link != nil {
 		linkID := link.LinkID
 
+		// A draft link (no active revision) is a leftover from a failed or
+		// incomplete upload. Listing the revisions of such a link returns a
+		// "File or folder not found" (2501) error, so don't: handle it
+		// directly by deleting the link and resubmitting the file creation.
+		// There is a restriction of one draft revision per file.
+		if link.State == proton.LinkStateDraft {
+			// TODO: maintain clientUID to mark that this is our own draft (which can indicate failed upload attempt!)
+			if !protonDrive.Config.ReplaceExistingDraft {
+				// based on the web behavior, it will ask if the user wants to replace the failed upload attempt
+				// current behavior, we report an error to not upload the file (conservative)
+				return "", false, ErrDraftExists
+			}
+
+			// delete the link (skipping trash, otherwise it won't work) and
+			// signal the caller to resubmit the file creation request
+			err := protonDrive.c.DeleteChildren(ctx, protonDrive.MainShare.ShareID, link.ParentLinkID, linkID)
+			if err != nil {
+				return "", false, err
+			}
+
+			return "", true, nil
+		}
+
+		// The link has an active revision. A concurrent/failed upload may also
+		// have left a draft revision on it; depending on the user config, we
+		// can abort the upload or delete that draft revision before creating a
+		// new one.
 		draftRevision, err := protonDrive.GetRevisions(ctx, link, proton.RevisionStateDraft)
 		if err != nil {
 			return "", false, err
 		}
 
-		// if we have a draft revision, depending on the user config, we can abort the upload or recreate a draft
-		// if we have no draft revision, then we can create a new draft revision directly (there is a restriction of 1 draft revision per file)
 		if len(draftRevision) > 0 {
-			// TODO: maintain clientUID to mark that this is our own draft (which can indicate failed upload attempt!)
-			if protonDrive.Config.ReplaceExistingDraft {
-				// Question: how do we observe for file upload cancellation -> clientUID?
-				// Random thoughts: if there are concurrent modification to the draft, the server should be able to catch this when commiting the revision
-				// since the manifestSignature (hash) will fail to match
-
-				// delete the draft revision (will fail if the file only have a draft but no active revisions)
-				if link.State == proton.LinkStateDraft {
-					// delete the link (skipping trash, otherwise it won't work)
-					err = protonDrive.c.DeleteChildren(ctx, protonDrive.MainShare.ShareID, link.ParentLinkID, linkID)
-					if err != nil {
-						return "", false, err
-					}
-
-					return "", true, nil
-				}
-
-				// delete the draft revision
-				err = protonDrive.c.DeleteRevision(ctx, protonDrive.MainShare.ShareID, linkID, draftRevision[0].ID)
-				if err != nil {
-					return "", false, err
-				}
-			} else {
-				// if there is a draft, based on the web behavior, it will ask if the user wants to replace the failed upload attempt
-				// current behavior, we report an error to not upload the file (conservative)
+			if !protonDrive.Config.ReplaceExistingDraft {
 				return "", false, ErrDraftExists
+			}
+
+			// Question: how do we observe for file upload cancellation -> clientUID?
+			// Random thoughts: if there are concurrent modification to the draft, the server should be able to catch this when commiting the revision
+			// since the manifestSignature (hash) will fail to match
+			err = protonDrive.c.DeleteRevision(ctx, protonDrive.MainShare.ShareID, linkID, draftRevision[0].ID)
+			if err != nil {
+				return "", false, err
 			}
 		}
 
