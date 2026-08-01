@@ -8,7 +8,7 @@ require (
 	github.com/ProtonMail/gluon v0.17.1-0.20230724134000-308be39be96e
 	github.com/ProtonMail/go-crypto v1.4.1
 	github.com/ProtonMail/gopenpgp/v3 v3.4.1
-	github.com/rclone/go-proton-api v1.0.3
+	github.com/rclone/go-proton-api v1.0.4
 	github.com/relvacode/iso8601 v1.6.0
 	golang.org/x/sync v0.16.0
 )
