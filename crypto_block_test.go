@@ -87,11 +87,7 @@ func TestBlockEncryptDecryptRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	sigEncHandle, err := pgp.Encryption().Recipients(nodeKR).New()
-	if err != nil {
-		t.Fatalf("sig enc handle: %v", err)
-	}
-	encSig, err := sigEncHandle.Encrypt(rawSig)
+	encSig, err := proton.EncryptMessageNonAead(nodeKR, rawSig, nil)
 	if err != nil {
 		t.Fatalf("encrypt sig: %v", err)
 	}
@@ -117,6 +113,178 @@ func TestBlockEncryptDecryptRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(out.Bytes(), plaintext) {
 		t.Fatalf("round-trip plaintext mismatch (len got %d want %d)", out.Len(), len(plaintext))
+	}
+}
+
+// newNodeKRv6 produces a v6 file node keyring the way the upload path does
+// (generateLockedKey with aead=true), so it carries the same AEAD preferences
+// as a real crypto-refresh file node key.
+func newNodeKRv6(t *testing.T) *crypto.KeyRing {
+	t.Helper()
+	passphrase := []byte("test-passphrase")
+	lockedArm, err := generateLockedKey("Drive key", "noreply@protonmail.com", passphrase, true)
+	if err != nil {
+		t.Fatalf("generate v6 node key: %v", err)
+	}
+	locked, err := crypto.NewKeyFromArmored(lockedArm)
+	if err != nil {
+		t.Fatalf("parse v6 node key: %v", err)
+	}
+	unlocked, err := locked.Unlock(passphrase)
+	if err != nil {
+		t.Fatalf("unlock v6 node key: %v", err)
+	}
+	if unlocked.GetVersion() != 6 {
+		t.Fatalf("node key version: got %d, want 6", unlocked.GetVersion())
+	}
+	kr, err := crypto.NewKeyRing(unlocked)
+	if err != nil {
+		t.Fatalf("v6 node keyring: %v", err)
+	}
+	return kr
+}
+
+// checkNonAead asserts msg is in the pre-crypto-refresh wire format: a v3
+// PKESK followed by a v1 SEIPD packet.
+func checkNonAead(t *testing.T, label string, msg []byte) {
+	t.Helper()
+	r := packet.NewReader(bytes.NewReader(msg))
+	p, err := r.Next()
+	if err != nil {
+		t.Fatalf("%s: read first packet: %v", label, err)
+	}
+	ek, ok := p.(*packet.EncryptedKey)
+	if !ok {
+		t.Fatalf("%s: first packet: got %T, want PKESK", label, p)
+	}
+	if ek.Version != 3 {
+		t.Fatalf("%s: PKESK version: got %d, want 3", label, ek.Version)
+	}
+	p, err = r.Next()
+	if err != nil {
+		t.Fatalf("%s: read second packet: %v", label, err)
+	}
+	se, ok := p.(*packet.SymmetricallyEncrypted)
+	if !ok {
+		t.Fatalf("%s: second packet: got %T, want SEIPD", label, p)
+	}
+	if se.Version != 1 {
+		t.Fatalf("%s: SEIPD version: got %d, want 1", label, se.Version)
+	}
+}
+
+// TestAuxEncryptionNonAeadWithV6NodeKey checks that everything encrypted to a
+// v6 file node key other than the block data stays in the pre-crypto-refresh
+// format. The Proton clients cannot decrypt AEAD-encrypted auxiliary fields
+// (xattr, block signatures, node passphrases), showing "the file or some of
+// its data cannot be decrypted" in the web app, so the format must not follow
+// the node key's AEAD preferences.
+func TestAuxEncryptionNonAeadWithV6NodeKey(t *testing.T) {
+	pgp := crypto.PGP()
+	addrKR := newAddrKR(t)
+	nodeKR := newNodeKRv6(t)
+
+	// Block signature (as uploadFile does): old format.
+	plaintext := []byte(strings.Repeat("hello proton drive ", 1000))
+	signHandle, err := pgp.Sign().SigningKeys(addrKR).Detached().New()
+	if err != nil {
+		t.Fatalf("sign handle: %v", err)
+	}
+	rawSig, err := signHandle.Sign(plaintext, crypto.Bytes)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	encSig, err := proton.EncryptMessageNonAead(nodeKR, rawSig, nil)
+	if err != nil {
+		t.Fatalf("encrypt sig: %v", err)
+	}
+	checkNonAead(t, "block signature", encSig.Bytes())
+
+	// The block data itself keeps the crypto-refresh format, and the download
+	// path still verifies the old-format encrypted signature next to it.
+	var req proton.CreateFileReq
+	sessionKey, err := req.SetContentKeyPacketAndSignature(nodeKR)
+	if err != nil {
+		t.Fatalf("SetContentKeyPacketAndSignature: %v", err)
+	}
+	sessionEnc, err := protonDrivePGP().Encryption().SessionKey(sessionKey).New()
+	if err != nil {
+		t.Fatalf("session enc: %v", err)
+	}
+	encMsg, err := sessionEnc.Encrypt(plaintext)
+	if err != nil {
+		t.Fatalf("encrypt block: %v", err)
+	}
+	encData := encMsg.Bytes()
+	if se, ok := readFirstPacket(t, encData).(*packet.SymmetricallyEncrypted); !ok || se.Version != 2 {
+		t.Fatalf("block data: want SEIPD version 2, got %#v", readFirstPacket(t, encData))
+	}
+	encSigArmor, err := encSig.Armor()
+	if err != nil {
+		t.Fatalf("armor sig: %v", err)
+	}
+	var out bytes.Buffer
+	err = decryptBlockIntoBuffer(
+		sessionKey,
+		addrKR,
+		nodeKR,
+		hashB64(encData),
+		encSigArmor,
+		&out,
+		io.NopCloser(bytes.NewReader(encData)),
+	)
+	if err != nil {
+		t.Fatalf("decryptBlockIntoBuffer: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), plaintext) {
+		t.Fatalf("round-trip plaintext mismatch")
+	}
+
+	// Xattr (encrypted to the file node key by commitNewRevision): old format.
+	var commitReq proton.CommitRevisionReq
+	err = commitReq.SetEncXAttrString(addrKR, nodeKR, &proton.RevisionXAttrCommon{
+		ModificationTime: "2026-08-01T00:00:00+0000",
+		Size:             1234,
+	})
+	if err != nil {
+		t.Fatalf("SetEncXAttrString: %v", err)
+	}
+	xattrMsg, err := crypto.NewPGPMessageFromArmored(commitReq.XAttr)
+	if err != nil {
+		t.Fatalf("unarmor xattr: %v", err)
+	}
+	checkNonAead(t, "xattr", xattrMsg.Bytes())
+
+	// Node passphrase (generateNodeKeys encrypts it to the parent keyring —
+	// exercised here with a v6 keyring to prove the format is pinned): old
+	// format, and the detached signature must verify.
+	_, nodePassphraseEnc, nodePassphraseSig, err := generateNodeKeys(nodeKR, addrKR, true)
+	if err != nil {
+		t.Fatalf("generateNodeKeys: %v", err)
+	}
+	passMsg, err := crypto.NewPGPMessageFromArmored(nodePassphraseEnc)
+	if err != nil {
+		t.Fatalf("unarmor passphrase: %v", err)
+	}
+	checkNonAead(t, "node passphrase", passMsg.Bytes())
+	dec, err := pgp.Decryption().DecryptionKeys(nodeKR).New()
+	if err != nil {
+		t.Fatalf("dec handle: %v", err)
+	}
+	passPlain, err := dec.Decrypt(passMsg.Bytes(), crypto.Bytes)
+	if err != nil {
+		t.Fatalf("decrypt passphrase: %v", err)
+	}
+	verify, err := pgp.Verify().VerificationKeys(addrKR).New()
+	if err != nil {
+		t.Fatalf("verify handle: %v", err)
+	}
+	res, err := verify.VerifyDetached(passPlain.Bytes(), []byte(nodePassphraseSig), crypto.Armor)
+	if err != nil {
+		t.Fatalf("verify passphrase sig: %v", err)
+	}
+	if sigErr := res.SignatureError(); sigErr != nil {
+		t.Fatalf("passphrase signature: %v", sigErr)
 	}
 }
 
@@ -191,7 +359,7 @@ func TestBlockEncryptCryptoRefresh(t *testing.T) {
 		t.Fatalf("block data: got cipher %d, want AES-256 (%d)", se.Cipher, packet.CipherAES256)
 	}
 
-	// Signature path is unchanged (default profile).
+	// The block signature stays in the pre-crypto-refresh format.
 	signHandle, err := pgp.Sign().SigningKeys(addrKR).Detached().New()
 	if err != nil {
 		t.Fatalf("sign handle: %v", err)
@@ -200,11 +368,7 @@ func TestBlockEncryptCryptoRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	sigEncHandle, err := pgp.Encryption().Recipients(nodeKR).New()
-	if err != nil {
-		t.Fatalf("sig enc handle: %v", err)
-	}
-	encSig, err := sigEncHandle.Encrypt(rawSig)
+	encSig, err := proton.EncryptMessageNonAead(nodeKR, rawSig, nil)
 	if err != nil {
 		t.Fatalf("encrypt sig: %v", err)
 	}

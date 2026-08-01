@@ -372,7 +372,9 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 
 		// v2's SignDetachedEncrypted: sign the data with addrKR, then encrypt
 		// the signature to newNodeKR. v3 does not expose a one-shot helper, so
-		// we sign first and encrypt the signature bytes separately.
+		// we sign first and encrypt the signature bytes separately. Unlike the
+		// block data, the signature must stay in the pre-crypto-refresh format
+		// even though the file node key is v6 (see EncryptMessageNonAead).
 		signHandle, err := pgp.Sign().SigningKeys(protonDrive.DefaultAddrKR).Detached().New()
 		if err != nil {
 			return nil, 0, nil, "", err
@@ -381,11 +383,7 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 		if err != nil {
 			return nil, 0, nil, "", err
 		}
-		sigEncHandle, err := pgp.Encryption().Recipients(newNodeKR).New()
-		if err != nil {
-			return nil, 0, nil, "", err
-		}
-		encSignature, err := sigEncHandle.Encrypt(rawSig)
+		encSignature, err := proton.EncryptMessageNonAead(newNodeKR, rawSig, nil)
 		if err != nil {
 			return nil, 0, nil, "", err
 		}

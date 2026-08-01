@@ -10,6 +10,7 @@ import (
 	"github.com/ProtonMail/gopenpgp/v3/armor"
 	"github.com/ProtonMail/gopenpgp/v3/crypto"
 	"github.com/ProtonMail/gopenpgp/v3/profile"
+	proton "github.com/rclone/go-proton-api"
 )
 
 // protonDrivePGP returns a gopenpgp handle configured for Proton Drive's
@@ -85,15 +86,13 @@ func generateCryptoKey(aead bool) (string, string, error) {
 
 // encryptWithSignature encrypts b to kr and signs it with addrKR, returning the
 // armored ciphertext and armored detached signature.
+//
+// Node passphrases must stay in the pre-crypto-refresh format regardless of
+// the recipient key's preferences (see proton.EncryptMessageNonAead).
 func encryptWithSignature(kr, addrKR *crypto.KeyRing, b []byte) (string, string, error) {
 	pgp := crypto.PGP()
 
-	encHandle, err := pgp.Encryption().Recipients(kr).New()
-	if err != nil {
-		return "", "", err
-	}
-
-	enc, err := encHandle.Encrypt(b)
+	enc, err := proton.EncryptMessageNonAead(kr, b, nil)
 	if err != nil {
 		return "", "", err
 	}
