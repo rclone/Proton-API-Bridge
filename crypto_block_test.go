@@ -200,12 +200,12 @@ func TestAuxEncryptionNonAeadWithV6NodeKey(t *testing.T) {
 	}
 	checkNonAead(t, "block signature", encSig.Bytes())
 
-	// The block data itself keeps the crypto-refresh format, and the download
+	// Block data of a revision of an existing crypto-refresh file keeps the
+	// v2 SEIPD format (driven by the stored v6 content key), and the download
 	// path still verifies the old-format encrypted signature next to it.
-	var req proton.CreateFileReq
-	sessionKey, err := req.SetContentKeyPacketAndSignature(nodeKR)
+	sessionKey, err := protonDrivePGP().GenerateSessionKey()
 	if err != nil {
-		t.Fatalf("SetContentKeyPacketAndSignature: %v", err)
+		t.Fatalf("generate v6 session key: %v", err)
 	}
 	sessionEnc, err := protonDrivePGP().Encryption().SessionKey(sessionKey).New()
 	if err != nil {
@@ -288,6 +288,55 @@ func TestAuxEncryptionNonAeadWithV6NodeKey(t *testing.T) {
 	}
 }
 
+// TestContentKeyPacketOldFormat checks that new files get a pre-crypto-refresh
+// content key: a non-v6 session key wrapped in a v3 PKESK. Files rclone
+// originates in the crypto-refresh format cannot be decrypted by the official
+// Proton clients, so the new format must never be used at file creation, only
+// followed on revisions of files that already use it.
+func TestContentKeyPacketOldFormat(t *testing.T) {
+	for _, v6 := range []bool{false, true} {
+		nodeKR := newNodeKR(t)
+		if v6 {
+			nodeKR = newNodeKRv6(t)
+		}
+		var req proton.CreateFileReq
+		sessionKey, err := req.SetContentKeyPacketAndSignature(nodeKR)
+		if err != nil {
+			t.Fatalf("v6=%v: SetContentKeyPacketAndSignature: %v", v6, err)
+		}
+		contentKeyPacket, err := base64.StdEncoding.DecodeString(req.ContentKeyPacket)
+		if err != nil {
+			t.Fatalf("v6=%v: decode content key packet: %v", v6, err)
+		}
+		ek, ok := readFirstPacket(t, contentKeyPacket).(*packet.EncryptedKey)
+		if !ok {
+			t.Fatalf("v6=%v: content key packet: not a PKESK packet", v6)
+		}
+		if ek.Version != 3 {
+			t.Fatalf("v6=%v: content key packet: got PKESK version %d, want 3", v6, ek.Version)
+		}
+
+		// A block encrypted with this session key must be a v1 SEIPD, even
+		// through the crypto-refresh block-encryption handle the upload path
+		// uses.
+		sessionEnc, err := protonDrivePGP().Encryption().SessionKey(sessionKey).New()
+		if err != nil {
+			t.Fatalf("v6=%v: session enc: %v", v6, err)
+		}
+		encMsg, err := sessionEnc.Encrypt([]byte("block data"))
+		if err != nil {
+			t.Fatalf("v6=%v: encrypt block: %v", v6, err)
+		}
+		se, ok := readFirstPacket(t, encMsg.Bytes()).(*packet.SymmetricallyEncrypted)
+		if !ok {
+			t.Fatalf("v6=%v: block data: not a SEIPD packet", v6)
+		}
+		if se.Version != 1 {
+			t.Fatalf("v6=%v: block data: got SEIPD version %d, want 1", v6, se.Version)
+		}
+	}
+}
+
 // readFirstPacket parses the first OpenPGP packet from b.
 func readFirstPacket(t *testing.T, b []byte) packet.Packet {
 	t.Helper()
@@ -298,37 +347,25 @@ func readFirstPacket(t *testing.T, b []byte) packet.Packet {
 	return p
 }
 
-// TestBlockEncryptCryptoRefresh checks that the upload path produces Proton
-// Drive's new crypto-refresh (RFC 9580) file-content format: a v6 PKESK content
-// key packet and a v2 SEIPD data packet encrypted with AES-256-GCM. It also
-// round-trips the block back through decryptBlockIntoBuffer to confirm the new
-// format is still readable by the download path.
+// TestBlockEncryptCryptoRefresh checks the revision path for a file that
+// already has a crypto-refresh content key (one created by an official Proton
+// client with the new format): the stored v6 session key selects a v2 SEIPD
+// data packet encrypted with AES-256-GCM, and the block still round-trips
+// through decryptBlockIntoBuffer.
+//
+// New files do NOT use this format — see TestContentKeyPacketOldFormat and
+// TestBlockEncryptDecryptRoundTrip for the creation path.
 func TestBlockEncryptCryptoRefresh(t *testing.T) {
 	pgp := crypto.PGP()
 
 	addrKR := newAddrKR(t)
 	nodeKR := newNodeKR(t)
 
-	// Build the content key packet the way go-proton-api does for an upload.
-	// This yields the v6 session key and populates ContentKeyPacket with the
-	// v6 PKESK.
-	var req proton.CreateFileReq
-	sessionKey, err := req.SetContentKeyPacketAndSignature(nodeKR)
+	// A v6 session key, as decrypted from an existing crypto-refresh file's
+	// stored content key packet.
+	sessionKey, err := protonDrivePGP().GenerateSessionKey()
 	if err != nil {
-		t.Fatalf("SetContentKeyPacketAndSignature: %v", err)
-	}
-
-	// The content key packet must be a v6 PKESK.
-	contentKeyPacket, err := base64.StdEncoding.DecodeString(req.ContentKeyPacket)
-	if err != nil {
-		t.Fatalf("decode content key packet: %v", err)
-	}
-	ek, ok := readFirstPacket(t, contentKeyPacket).(*packet.EncryptedKey)
-	if !ok {
-		t.Fatalf("content key packet: not a PKESK packet")
-	}
-	if ek.Version != 6 {
-		t.Fatalf("content key packet: got PKESK version %d, want 6", ek.Version)
+		t.Fatalf("generate v6 session key: %v", err)
 	}
 
 	plaintext := []byte(strings.Repeat("hello proton drive ", 1000))

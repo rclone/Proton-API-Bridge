@@ -94,9 +94,13 @@ func (protonDrive *ProtonDrive) createFileUploadDraft(ctx context.Context, paren
 		Encryption: parent link's node key
 		Signature: share's signature address keys
 	*/
-	// File node keys are v6 (crypto-refresh) so the v6 content key packet can be
-	// verified against them by the server.
-	newNodeKey, newNodePassphraseEnc, newNodePassphraseSignature, err := generateNodeKeys(parentNodeKR, protonDrive.DefaultAddrKR, true)
+	// New files get a v4 node key and the pre-crypto-refresh content format:
+	// the official Proton clients (web included) cannot yet decrypt files that
+	// originate in the crypto-refresh format, whether or not the auxiliary
+	// fields stay non-AEAD. Revisions of files that already have a v6 node key
+	// keep their format: the stored content key's v6 flag selects the v2 SEIPD
+	// block encryption (see the block encryption below).
+	newNodeKey, newNodePassphraseEnc, newNodePassphraseSignature, err := generateNodeKeys(parentNodeKR, protonDrive.DefaultAddrKR, false)
 	if err != nil {
 		return "", "", nil, nil, err
 	}

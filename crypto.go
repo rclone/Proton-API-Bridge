@@ -45,10 +45,11 @@ func generatePassphrase() (string, error) {
 // the armored locked key.
 //
 // When aead is true the key is generated with the crypto-refresh handle so it
-// is a v6 key. This is required for FILE node keys only: Proton's server
-// rejects a v6 content key packet (PKESK) encrypted to a v4 node key ("could
-// not verify the nodeKey was used for encrypting contentKeyPacket"), so the
-// file node key must itself be v6. Folder node keys stay v4 (aead false).
+// is a v6 key. Node keys are currently always generated with aead false (v4):
+// the official Proton clients cannot yet decrypt files whose node key is v6,
+// so originating crypto-refresh files is not safe. If v6 file node keys are
+// ever enabled again, note that Proton's server rejects a v6 content key
+// packet (PKESK) encrypted to a v4 node key, so the two must change together.
 func generateLockedKey(name, email string, passphrase []byte, aead bool) (string, error) {
 	pgp := crypto.PGP()
 	if aead {
@@ -116,9 +117,9 @@ func encryptWithSignature(kr, addrKR *crypto.KeyRing, b []byte) (string, string,
 }
 
 // generateNodeKeys generates a node key, its passphrase, and the passphrase
-// signature. aead selects a v6 (crypto-refresh) node key, which is used for
-// FILE nodes only — folder nodes pass aead=false. The passphrase is always
-// encrypted to the parent keyring with the default (non-AEAD) handle.
+// signature. aead selects a v6 (crypto-refresh) node key (currently unused —
+// see generateLockedKey). The passphrase is always encrypted to the parent
+// keyring in the pre-crypto-refresh format.
 func generateNodeKeys(kr, addrKR *crypto.KeyRing, aead bool) (string, string, string, error) {
 	nodePassphrase, nodeKey, err := generateCryptoKey(aead)
 	if err != nil {
