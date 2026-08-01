@@ -52,6 +52,14 @@ func (protonDrive *ProtonDrive) handleRevisionConflict(ctx context.Context, link
 		// new one.
 		draftRevision, err := protonDrive.GetRevisions(ctx, link, proton.RevisionStateDraft)
 		if err != nil {
+			// If we can't even read the revisions (corrupted link) and
+			// replace_existing_draft is enabled, permanently delete the
+			// corrupted link (skip trash to immediately free the name)
+			// and signal the caller to retry file creation from scratch.
+			if protonDrive.Config.ReplaceExistingDraft {
+				_ = protonDrive.c.DeleteChildren(ctx, protonDrive.MainShare.ShareID, link.ParentLinkID, linkID)
+				return "", true, nil
+			}
 			return "", false, err
 		}
 
@@ -266,6 +274,16 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 		return nil, 0, nil, "", ErrMissingInputUploadAndCollectBlockData
 	}
 
+	// Fetch verification code for per-block token computation
+	verification, err := protonDrive.c.GetUploadVerification(ctx, protonDrive.MainShare.VolumeID, linkID, revisionID)
+	if err != nil {
+		return nil, 0, nil, "", err
+	}
+	verificationCode, err := base64.StdEncoding.DecodeString(verification.VerificationCode)
+	if err != nil {
+		return nil, 0, nil, "", err
+	}
+
 	totalFileSize := int64(0)
 
 	pendingUploadBlocks := make([]PendingUploadBlocks, 0)
@@ -284,6 +302,7 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 			ShareID:    protonDrive.MainShare.ShareID,
 			LinkID:     linkID,
 			RevisionID: revisionID,
+			VolumeID:   protonDrive.MainShare.VolumeID,
 
 			BlockList: blockList,
 		}
@@ -405,17 +424,34 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 		}
 		manifestSignatureData = append(manifestSignatureData, hash...)
 
+		// Compute per-block verification token: XOR first 32 bytes of
+		// encrypted data with the verification code, then base64 encode.
+		xorLen := 32
+		if len(verificationCode) < xorLen {
+			xorLen = len(verificationCode)
+		}
+		tokenBytes := make([]byte, xorLen)
+		for j := 0; j < xorLen; j++ {
+			b := byte(0)
+			if j < len(encData) {
+				b = encData[j]
+			}
+			tokenBytes[j] = b ^ verificationCode[j]
+		}
+		verifierToken := base64.StdEncoding.EncodeToString(tokenBytes)
+
 		pendingUploadBlocks = append(pendingUploadBlocks, PendingUploadBlocks{
 			blockUploadInfo: proton.BlockUploadInfo{
 				Index:        i, // iOS drive: BE starts with 1
 				Size:         int64(len(encData)),
 				EncSignature: encSignatureStr,
 				Hash:         base64Hash,
+				Verifier:     &proton.BlockVerifier{Token: verifierToken},
 			},
 			encData: encData,
 		})
 	}
-	err := uploadPendingBlocks()
+	err = uploadPendingBlocks()
 	if err != nil {
 		return nil, 0, nil, "", err
 	}
@@ -485,6 +521,9 @@ func (protonDrive *ProtonDrive) uploadFile(ctx context.Context, parentLink *prot
 	/* step 2: upload blocks and collect block data */
 	manifestSignature, fileSize, blockSizes, digests, err := protonDrive.uploadAndCollectBlockData(ctx, newSessionKey, newNodeKR, file, linkID, revisionID)
 	if err != nil {
+		// Rollback: trash the draft to prevent ghost entries that block
+		// future uploads with the same filename.
+		_ = protonDrive.c.DeleteChildren(ctx, protonDrive.MainShare.ShareID, parentLink.LinkID, linkID)
 		return "", nil, err
 	}
 
