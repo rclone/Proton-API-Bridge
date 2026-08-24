@@ -2,7 +2,6 @@ package proton_api_bridge
 
 import (
 	"context"
-	"time"
 
 	"github.com/rclone/go-proton-api"
 )
@@ -255,8 +254,6 @@ func (protonDrive *ProtonDrive) moveLink(ctx context.Context, srcLink *proton.Li
 	if err != nil {
 		return err
 	}
-
-	time.Sleep(5 * time.Second)
 
 	return nil
 }
