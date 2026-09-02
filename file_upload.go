@@ -19,6 +19,16 @@ import (
 	"github.com/rclone/go-proton-api"
 )
 
+func collectUploadErrors(errChan <-chan error, count int) error {
+	var firstErr error
+	for range count {
+		if err := <-errChan; err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func (protonDrive *ProtonDrive) handleRevisionConflict(ctx context.Context, link *proton.Link, createFileResp *proton.CreateFileRes) (string, bool, error) {
 	if link != nil {
 		linkID := link.LinkID
@@ -292,15 +302,13 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 			return err
 		}
 
-		errChan := make(chan error)
+		errChan := make(chan error, len(blockUploadResp))
 		uploadBlockWrapper := func(ctx context.Context, errChan chan error, bareURL, token string, block io.Reader) {
-			// log.Println("Before semaphore")
 			if err := protonDrive.blockUploadSemaphore.Acquire(ctx, 1); err != nil {
 				errChan <- err
+				return
 			}
 			defer protonDrive.blockUploadSemaphore.Release(1)
-			// log.Println("After semaphore")
-			// defer log.Println("Release semaphore")
 
 			errChan <- protonDrive.c.UploadBlock(ctx, bareURL, token, block)
 		}
@@ -308,11 +316,8 @@ func (protonDrive *ProtonDrive) uploadAndCollectBlockData(ctx context.Context, n
 			go uploadBlockWrapper(ctx, errChan, blockUploadResp[i].BareURL, blockUploadResp[i].Token, bytes.NewReader(pendingUploadBlocks[i].encData))
 		}
 
-		for i := 0; i < len(blockUploadResp); i++ {
-			err := <-errChan
-			if err != nil {
-				return err
-			}
+		if err := collectUploadErrors(errChan, len(blockUploadResp)); err != nil {
+			return err
 		}
 
 		pendingUploadBlocks = pendingUploadBlocks[:0]
