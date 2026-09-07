@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+
+	"github.com/rclone/go-proton-api"
 )
 
 // Logger is the minimum interface the bridge needs to emit log lines.
@@ -49,6 +51,10 @@ type Config struct {
 	ReusableCredential   *ReusableCredentialData
 	UseReusableLogin     bool
 	CredentialCacheFile  string // If CredentialCacheFile is empty, no credential will be logged
+	// AuthRefreshHook, if non-nil, is registered on the client so that a
+	// session whose refresh token was rotated by another client (or process)
+	// can adopt the newer credentials instead of being de-authed.
+	AuthRefreshHook proton.AuthRefreshHook
 
 	/* Setting */
 	DestructiveIntegrationTest     bool // CAUTION: the integration test requires a clean proton drive

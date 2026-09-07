@@ -37,6 +37,16 @@ func cacheCredentialToFile(config *Config) (err error) {
 	return err
 }
 
+// registerAuthHandlers attaches the caller's handlers to a freshly created
+// client, before any request that could trigger a refresh.
+func registerAuthHandlers(c *proton.Client, config *Config, authHandler proton.AuthHandler, deAuthHandler proton.Handler) {
+	c.AddAuthHandler(authHandler)
+	c.AddDeauthHandler(deAuthHandler)
+	if config.AuthRefreshHook != nil {
+		c.AddAuthRefreshHook(config.AuthRefreshHook)
+	}
+}
+
 /*
 Log in methods
 - username and password to log in
@@ -57,8 +67,7 @@ func Login(ctx context.Context, config *Config, authHandler proton.AuthHandler, 
 
 	if config.UseReusableLogin {
 		c = m.NewClient(config.ReusableCredential.UID, config.ReusableCredential.AccessToken, config.ReusableCredential.RefreshToken)
-		c.AddAuthHandler(authHandler)
-		c.AddDeauthHandler(deAuthHandler)
+		registerAuthHandlers(c, config, authHandler, deAuthHandler)
 
 		err := cacheCredentialToFile(config)
 		if err != nil {
@@ -88,8 +97,7 @@ func Login(ctx context.Context, config *Config, authHandler proton.AuthHandler, 
 		if err != nil {
 			return nil, nil, nil, nil, nil, nil, err
 		}
-		c.AddAuthHandler(authHandler)
-		c.AddDeauthHandler(deAuthHandler)
+		registerAuthHandlers(c, config, authHandler, deAuthHandler)
 
 		if auth.TwoFA.Enabled&proton.HasTOTP != 0 {
 			if config.FirstLoginCredential.TwoFA != "" {
