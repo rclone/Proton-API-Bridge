@@ -16,6 +16,17 @@ type FileSystemAttrs struct {
 	Digests          string // sha1 string
 }
 
+// revisionModificationTime returns the modification time recorded in the
+// revision's extended attributes, or the link's modification time if none was
+// recorded.
+func revisionModificationTime(link *proton.Link, xAttrCommon *proton.RevisionXAttrCommon) (time.Time, error) {
+	// The Proton Drive SDK leaves ModificationTime out when the uploader doesn't know it.
+	if xAttrCommon.ModificationTime == "" {
+		return time.Unix(link.ModifyTime, 0), nil
+	}
+	return iso8601.ParseString(xAttrCommon.ModificationTime)
+}
+
 func (protonDrive *ProtonDrive) GetRevisions(ctx context.Context, link *proton.Link, revisionType proton.RevisionState) ([]*proton.RevisionMetadata, error) {
 	revisions, err := protonDrive.c.ListRevisions(ctx, protonDrive.MainShare.ShareID, link.LinkID)
 	if err != nil {
@@ -70,7 +81,7 @@ func (protonDrive *ProtonDrive) GetActiveRevisionAttrs(ctx context.Context, link
 		return nil, nil
 	}
 
-	modificationTime, err := iso8601.ParseString(revisionXAttrCommon.ModificationTime)
+	modificationTime, err := revisionModificationTime(link, revisionXAttrCommon)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +137,7 @@ func (protonDrive *ProtonDrive) GetActiveRevisionWithAttrs(ctx context.Context, 
 		return &revision, nil, nil
 	}
 
-	modificationTime, err := iso8601.ParseString(revisionXAttrCommon.ModificationTime)
+	modificationTime, err := revisionModificationTime(link, revisionXAttrCommon)
 	if err != nil {
 		return nil, nil, err
 	}
